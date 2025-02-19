@@ -8,11 +8,11 @@ class ProductsController < ApplicationController
   before_action :shopify_session, only: %i[index sync_vendor_stock]
   def index
 
-  	uri = URI("https://api.b2b.turum.pl/v1/products?page=1&page_size=50&search_query=nike")
+  	uri = URI("https://api.b2b.turum.pl/v1/products_full_list")
 
   	# Set up the request
   	request = Net::HTTP::Get.new(uri)
-  	request["Authorization"] = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtaWtvbGFqLm1hc3puZXJAZ21haWwuY29tIiwicm9sZSI6InR1cnVtX2N1c3RvbWVyIiwiZXhwIjoxNzM5OTczNDU2fQ.iofruD3D42-TvpD_Foqj6YzgyFRj19Lo6ZA66Rf6uaU"
+  	request["Authorization"] = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtaWtvbGFqLm1hc3puZXJAZ21haWwuY29tIiwicm9sZSI6InR1cnVtX2N1c3RvbWVyIiwiZXhwIjoxNzQwMDY5MTEzfQ.JXvHR3RfJ36CwzvL7NMsZbanMpkoEDFhZY0-kX9JqJs"
   	request["Accept"] = "application/json"
 
   	# Perform the HTTP request
@@ -22,19 +22,20 @@ class ProductsController < ApplicationController
 
   	# Parse and print the response
   	response_body = JSON.parse(response.body)
-
+    first_product = response_body["data"].first
+    # create_shopify_product(first_product)
 
   	if response_body["data"].present?
-  	  response_body["data"].first(1).each do |product_data|
-
-  	    # create_shopify_product(product_data)
+  	  response_body["data"].first(10).each do |product_data|
+          puts response_body["product_data"]
+  	    create_shopify_product(product_data)
   	  end
   	else
   	  puts "No products found in the API response."
   	end
   	
-  	puts response_body
-  	render json:response_body
+  	puts response_body["data"].first
+  	render json:response_body["data"].first
   end
 
   def sync_vendor_stock
@@ -115,14 +116,6 @@ class ProductsController < ApplicationController
 
  
 
-
-
-
-
-
-
-
-
  def update_inventory_quantity(inventory_item_id, quantity)
    inventory_data = {
      location_id: ENV['SHOPIFY_LOCATION_ID'], # Your Shopify Location ID
@@ -155,45 +148,63 @@ class ProductsController < ApplicationController
 
 
 
-  def create_shopify_product(data)
-    begin
-      # Convert stock to integer (removes `+` if present)
-      inventory_quantity = data["stock"].gsub("+", "").to_i
+ def create_shopify_product(data)
+   begin
+     # Prepare Shopify product payload
+     product_data = {
+       product: {
+         title: data["name"],  # Product name
+         body_html: "<strong>Limited Edition Sneakers</strong>",  # Product description
+         vendor: data["brand"],  # Dynamic vendor (brand)
+         product_type: "Shoes",  # Product category
+         tags: "Sneakers,Limited Edition,#{data['brand']}",  # Dynamic tagging
+         status: "active",
+         images: [{ src: data["image"] }],  # Product image
 
-      product_data = {
-        product: {
-          title: data["name"],           # "Nike Dunk Low Grey Fog"
-          body_html: "<strong>Limited Edition Sneakers</strong>",
-          vendor: "Nike",                # Static vendor (update if needed)
-          product_type: "Shoes",         # Static product type (update if needed)
-          status: "active",
-          images: [{ src: data["image"] }],  # Image URL from data
-          variants: [{
-            sku: data["sku"],                 # SKU from data
-            price: data["price"].to_f,        # Convert price to float
-            inventory_management: "shopify",
-            inventory_quantity: inventory_quantity
-          }]
-        }
-      }
+         # ✅ Corrected `options` format
+         options: [
+           {
+             name: "Size", 
+             values: data["variants"].map { |v| v["size"].to_s } # Ensure sizes are strings
+           }
+         ],
 
-      # Send request to Shopify API
-      client = ShopifyAPI::Clients::Rest::Admin.new(session: @session)
-      response = client.post(path: "products.json", body: product_data)
+         # Variants setup
+         variants: data["variants"].map do |variant|
+           {
+             sku: "#{data['sku']}-#{variant['size']}",  # Unique SKU per variant
+             title: "#{data['name']} - Size #{variant['size']}",  # Variant title
+             option1: variant["size"].to_s,  # Size must be a string
+             price: variant["price"].to_f,  # Convert price to float
+             compare_at_price: (variant["price"].to_f * 1.2).round(2),  # 20% markup
+             inventory_management: "shopify",
+             inventory_quantity: variant["stock"].to_i,  # Convert stock to integer
+             inventory_policy: "continue",  # Allows overselling if stock reaches zero
+             barcode: "BAR#{variant['variant_id'][0..5]}",  # Generate fake barcode
+           }
+         end
+       }
+     }
 
-      if response.code == 201
-        puts "✅ Product created: #{response.body['product']['title']}"
-      else
-        puts "❌ Error creating product: #{response.body}"
-      end
+     # Send request to Shopify API
+     client = ShopifyAPI::Clients::Rest::Admin.new(session: @session)
+     response = client.post(path: "products.json", body: product_data)
 
-    rescue Errno::ECONNRESET => e
-      puts "🔄 Connection reset error: #{e.message}. Retrying..."
-      retry
-    rescue StandardError => e
-      puts "⚠️ Error: #{e.message}"
-    end
-  end
+     if response.code == 201
+       puts "✅ Product created: #{response.body['product']['title']}"
+     else
+       puts "❌ Error creating product: #{response.body}"
+     end
+
+   rescue Errno::ECONNRESET => e
+     puts "🔄 Connection reset error: #{e.message}. Retrying..."
+     retry
+   rescue StandardError => e
+     puts "⚠️ Error: #{e.message}"
+   end
+ end
+
+
 
 
 
