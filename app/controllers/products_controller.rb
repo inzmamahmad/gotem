@@ -12,7 +12,7 @@ class ProductsController < ApplicationController
 
   	# Set up the request
   	request = Net::HTTP::Get.new(uri)
-  	request["Authorization"] = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtaWtvbGFqLm1hc3puZXJAZ21haWwuY29tIiwicm9sZSI6InR1cnVtX2N1c3RvbWVyIiwiZXhwIjoxNzQwMDY5MTEzfQ.JXvHR3RfJ36CwzvL7NMsZbanMpkoEDFhZY0-kX9JqJs"
+  	request["Authorization"] = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtaWtvbGFqLm1hc3puZXJAZ21haWwuY29tIiwicm9sZSI6InR1cnVtX2N1c3RvbWVyIiwiZXhwIjoxNzQwMTU2MzQwfQ.FbD22P7NJHNkh5On3RJ6XE6EAvPhPLUPUdc7j8_ENH8"
   	request["Accept"] = "application/json"
 
   	# Perform the HTTP request
@@ -22,13 +22,13 @@ class ProductsController < ApplicationController
 
   	# Parse and print the response
   	response_body = JSON.parse(response.body)
-    first_product = response_body["data"].first
+    # first_product = response_body["data"].first
     # create_shopify_product(first_product)
 
   	if response_body["data"].present?
-  	  response_body["data"].first(10).each do |product_data|
+  	  response_body["data"].first(1).each do |product_data|
           puts response_body["product_data"]
-  	    create_shopify_product(product_data)
+  	    create_or_update_shopify_product(product_data, 103901626692)
   	  end
   	else
   	  puts "No products found in the API response."
@@ -148,52 +148,24 @@ class ProductsController < ApplicationController
 
 
 
- def create_shopify_product(data)
+ def create_or_update_shopify_product(data, location_id)
    begin
-     # Prepare Shopify product payload
-     product_data = {
-       product: {
-         title: data["name"],  # Product name
-         body_html: "<strong>Limited Edition Sneakers</strong>",  # Product description
-         vendor: data["brand"],  # Dynamic vendor (brand)
-         product_type: "Shoes",  # Product category
-         tags: "Sneakers,Limited Edition,#{data['brand']}",  # Dynamic tagging
-         status: "active",
-         images: [{ src: data["image"] }],  # Product image
-
-         # ✅ Corrected `options` format
-         options: [
-           {
-             name: "Size", 
-             values: data["variants"].map { |v| v["size"].to_s } # Ensure sizes are strings
-           }
-         ],
-
-         # Variants setup
-         variants: data["variants"].map do |variant|
-           {
-             sku: "#{data['sku']}-#{variant['size']}",  # Unique SKU per variant
-             title: "#{data['name']} - Size #{variant['size']}",  # Variant title
-             option1: variant["size"].to_s,  # Size must be a string
-             price: variant["price"].to_f,  # Convert price to float
-             compare_at_price: (variant["price"].to_f * 1.2).round(2),  # 20% markup
-             inventory_management: "shopify",
-             inventory_quantity: variant["stock"].to_i,  # Convert stock to integer
-             inventory_policy: "continue",  # Allows overselling if stock reaches zero
-             barcode: "BAR#{variant['variant_id'][0..5]}",  # Generate fake barcode
-           }
-         end
-       }
-     }
-
-     # Send request to Shopify API
      client = ShopifyAPI::Clients::Rest::Admin.new(session: @session)
-     response = client.post(path: "products.json", body: product_data)
 
-     if response.code == 201
-       puts "✅ Product created: #{response.body['product']['title']}"
+     # Step 1: Check if the product already exists by searching for its title
+     search_response = client.get(path: "products.json", query: { title: data["name"] })
+
+     existing_product = search_response.body["products"].find { |p| p["title"] == data["name"] }
+
+     if existing_product
+       product_id = existing_product["id"]
+       puts "🔄 Product already exists: #{existing_product['title']} (ID: #{product_id})"
+       
+       # Step 2: Update variants instead of creating a new product
+       update_shopify_variants(client, product_id, data, location_id)
      else
-       puts "❌ Error creating product: #{response.body}"
+       # Step 3: Create a new product if it does not exist
+       create_new_shopify_product(client, data, location_id)
      end
 
    rescue Errno::ECONNRESET => e
@@ -203,6 +175,112 @@ class ProductsController < ApplicationController
      puts "⚠️ Error: #{e.message}"
    end
  end
+
+ # Function to update variants of an existing product
+ def update_shopify_variants(client, product_id, data, location_id)
+   # Get current variants of the product
+   existing_variants_response = client.get(path: "products/#{product_id}.json")
+   existing_variants = existing_variants_response.body["product"]["variants"]
+
+   data["variants"].each do |variant|
+     existing_variant = existing_variants.find { |v| v["option1"] == variant["size"].to_s }
+
+     if existing_variant
+       # If variant exists, update inventory
+       update_shopify_inventory(client, existing_variant["inventory_item_id"], location_id, variant["stock"].to_i)
+       puts "✅ Updated existing variant: Size #{variant['size']}"
+     else
+       # If variant does not exist, add a new variant
+       new_variant_data = {
+         variant: {
+           product_id: product_id,
+           sku: "#{data['sku']}-#{variant['size']}",
+           title: "#{data['name']} - Size #{variant['size']}",
+           option1: variant["size"].to_s,
+           price: variant["price"].to_f,
+           compare_at_price: (variant["price"].to_f * 1.2).round(2),
+           inventory_management: "shopify",
+           inventory_policy: "continue",
+           barcode: "BAR#{variant['variant_id'][0..5]}"
+         }
+       }
+       
+       new_variant_response = client.post(path: "variants.json", body: new_variant_data)
+       if new_variant_response.code == 201
+         new_variant = new_variant_response.body["variant"]
+         update_shopify_inventory(client, new_variant["inventory_item_id"], location_id, variant["stock"].to_i)
+         puts "✅ Added new variant: Size #{variant['size']}"
+       else
+         puts "❌ Error adding new variant: #{new_variant_response.body}"
+       end
+     end
+   end
+ end
+
+ # Function to create a new product
+ def create_new_shopify_product(client, data, location_id)
+   product_data = {
+     product: {
+       title: data["name"],
+       body_html: "<strong>Limited Edition Sneakers</strong>",
+       vendor: data["brand"],
+       product_type: "Shoes",
+       tags: "Sneakers,Limited Edition,#{data['brand']}",
+       status: "draft",
+       images: [{ src: data["image"] }],
+       options: [
+         {
+           name: "Size",
+           values: data["variants"].map { |v| v["size"].to_s }
+         }
+       ],
+       variants: data["variants"].map do |variant|
+         {
+           sku: "#{data['sku']}-#{variant['size']}",
+           title: "#{data['name']} - Size #{variant['size']}",
+           option1: variant["size"].to_s,
+           price: variant["price"].to_f,
+           compare_at_price: (variant["price"].to_f * 1.2).round(2),
+           inventory_management: "shopify",
+           inventory_policy: "continue",
+           barcode: "BAR#{variant['variant_id'][0..5]}",
+           inventory_quantity: 0
+         }
+       end
+     }
+   }
+
+   response = client.post(path: "products.json", body: product_data)
+
+   if response.code == 201
+     product_id = response.body["product"]["id"]
+     puts "✅ New product created: #{response.body['product']['title']} (ID: #{product_id})"
+     response.body["product"]["variants"].each_with_index do |variant, index|
+       update_shopify_inventory(client, variant["inventory_item_id"], location_id, data["variants"][index]["stock"].to_i)
+     end
+   else
+     puts "❌ Error creating product: #{response.body}"
+   end
+ end
+
+ # Function to update inventory levels
+ def update_shopify_inventory(client, inventory_item_id, location_id, stock_quantity)
+   inventory_data = {
+     location_id: location_id,
+     inventory_item_id: inventory_item_id,
+     available: stock_quantity
+   }
+
+   inventory_response = client.post(path: "inventory_levels/set.json", body: inventory_data)
+
+   if inventory_response.code == 200
+     puts "✅ Inventory updated for Inventory Item #{inventory_item_id} (Stock: #{stock_quantity}) at Location #{location_id}"
+   else
+     puts "❌ Error updating inventory: #{inventory_response.body}"
+   end
+ end
+
+
 
 
 
