@@ -6,6 +6,8 @@ Rails.application.routes.draw do
   resources :products do
     collection do
       get :sync_vendor_stock
+      get :check_all_feed_brand
+      get :remove_extra_shopify_product
     end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html

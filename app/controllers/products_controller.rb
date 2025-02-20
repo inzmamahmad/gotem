@@ -6,6 +6,7 @@ require 'json'
 
 class ProductsController < ApplicationController
   before_action :shopify_session, only: %i[index sync_vendor_stock]
+
   def index
 
   	uri = URI("https://api.b2b.turum.pl/v1/products_full_list")
@@ -28,14 +29,14 @@ class ProductsController < ApplicationController
   	if response_body["data"].present?
   	  response_body["data"].first(1).each do |product_data|
           puts response_body["product_data"]
-  	    create_or_update_shopify_product(product_data, 103901626692)
+  	    # create_or_update_shopify_product(product_data, 103901626692)
   	  end
   	else
   	  puts "No products found in the API response."
   	end
   	
-  	puts response_body["data"].first
-  	render json:response_body["data"].first
+  	puts response_body
+  	render json:response_body
   end
 
   def sync_vendor_stock
@@ -279,6 +280,169 @@ class ProductsController < ApplicationController
      puts "❌ Error updating inventory: #{inventory_response.body}"
    end
  end
+
+
+
+  def check_all_feed_brand
+    uri = URI("https://api.b2b.turum.pl/v1/products_full_list")
+
+    # Set up the request
+    request = Net::HTTP::Get.new(uri)
+    request["Authorization"] = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtaWtvbGFqLm1hc3puZXJAZ21haWwuY29tIiwicm9sZSI6InR1cnVtX2N1c3RvbWVyIiwiZXhwIjoxNzQwMTU2MzQwfQ.FbD22P7NJHNkh5On3RJ6XE6EAvPhPLUPUdc7j8_ENH8"
+    request["Accept"] = "application/json"
+
+    # Perform the HTTP request
+    response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) do |http|
+      http.request(request)
+    end
+
+    # Parse the response
+    response_body = JSON.parse(response.body)
+
+    if response_body["data"].present?
+      # Extract unique brands
+      unique_brands = response_body["data"].map { |product| product["brand"] }.uniq
+
+      # Write unique brands to a text file
+      File.open("unique_brands.txt", "w") do |file|
+        unique_brands.each { |brand| file.puts(brand) }
+      end
+
+      puts "✅ Unique brands saved to unique_brands.txt!"
+    else
+      puts "No products found in the API response."
+    end
+  end
+
+
+
+
+
+
+
+
+
+
+  def remove_extra_shopify_product
+    begin
+      puts "🔄 Fetching external product feed..."
+      
+      # Fetch external products
+      uri = URI("https://api.b2b.turum.pl/v1/products_full_list")
+      request = Net::HTTP::Get.new(uri)
+      request["Authorization"] = "Bearer #{ENV['TURUM_API_KEY']}"
+      request["Accept"] = "application/json"
+
+      response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) { |http| http.request(request) }
+      external_data = JSON.parse(response.body)
+
+      unless external_data["data"]
+        puts "⚠️ No products found in vendor API. Exiting..."
+        return
+      end
+
+      # Extract SKUs from external API
+      external_skus = external_data["data"].map { |product| product["sku"] }.compact
+      puts "✅ Found #{external_skus.count} products in the external feed."
+
+      # Vendors whose products should be checked & removed if missing
+      target_vendors = ["ASICS", "CROCS", "PUMA", "AIR JORDAN", "ON", "NIKE", "ADIDAS", "NEW BALANCE", "VANS"]
+
+      # Fetch all Shopify products with pagination
+      all_shopify_products = fetch_all_shopify_products
+      puts "✅ Fetched #{all_shopify_products.count} products from Shopify."
+
+      # Identify Shopify products not in the external feed
+      products_to_remove = []
+
+      all_shopify_products.each do |product|
+        # Check if product belongs to the target vendors
+        next unless target_vendors.include?(product["vendor"])
+
+        # Extract SKUs from product variants
+        product_skus = product["variants"].map { |variant| variant["sku"] }.compact
+
+        # If none of the product's SKUs exist in the external feed, mark for deletion
+        unless product_skus.any? { |sku| external_skus.include?(sku) }
+          products_to_remove << { id: product["id"], title: product["title"], vendor: product["vendor"] }
+        end
+      end
+
+      puts "🚨 Found #{products_to_remove.count} extra products from target vendors to remove."
+
+      # Remove products from Shopify
+      products_to_remove.each do |product|
+        delete_shopify_product(product[:id])
+        puts "🗑 Removed: #{product[:title]} (Vendor: #{product[:vendor]})"
+      end
+
+      puts "✅ Cleanup completed successfully!"
+
+    rescue JSON::ParserError => e
+      puts "❌ Error parsing vendor API response: #{e.message}"
+    rescue Errno::ECONNRESET, Net::OpenTimeout => e
+      puts "🔄 Connection error: #{e.message}. Retrying..."
+      retry
+    rescue StandardError => e
+      puts "⚠️ Unexpected error: #{e.message}"
+    end
+  end
+
+  def fetch_all_shopify_products
+    client = ShopifyAPI::Clients::Rest::Admin.new(session: @session)
+    products = []
+    next_page_info = nil
+
+    loop do
+      query_params = { "fields" => "id,title,vendor,variants", "limit" => 250 }
+      query_params["page_info"] = next_page_info if next_page_info
+
+      response = client.get(path: "products.json", query: query_params)
+
+      if response.code == 200
+        body = response.body
+        products.concat(body["products"])
+        next_page_info = extract_next_page_info(response)
+
+        break unless next_page_info # Stop if no more pages
+      else
+        puts "❌ Error fetching Shopify products: #{response.body}"
+        break
+      end
+    end
+
+    products
+  end
+
+  def extract_next_page_info(response)
+    link_header = response.headers["link"]
+    return nil unless link_header
+
+    # Extract "next" page_info from Shopify's pagination header
+    match = link_header.match(/page_info=([^&>]+).*rel="next"/)
+    match[1] if match
+  end
+
+  def delete_shopify_product(product_id)
+    client = ShopifyAPI::Clients::Rest::Admin.new(session: @session)
+    response = client.delete(path: "products/#{product_id}.json")
+
+    if response.code == 200
+      puts "✅ Successfully deleted product ID: #{product_id}"
+    else
+      puts "❌ Failed to delete product ID: #{product_id}, Error: #{response.body}"
+    end
+  end
+
+
+
+
+
+
+
+
+
+
 
 
 
