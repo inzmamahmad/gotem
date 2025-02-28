@@ -4,6 +4,10 @@ ruby "3.0.0"
 
 # Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
 gem "rails", "~> 7.1.3", ">= 7.1.3.3"
+group :development do
+  gem 'pry'
+  gem 'pry-rails'  # Enhances Rails console with Pry
+end
 
 gem "shopify_api"
 gem 'httparty'
