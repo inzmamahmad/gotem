@@ -26,7 +26,7 @@ class ProductsController < ApplicationController
       # puts "Total Products Count: #{total_count}"
       
       if products.present?
-        render json: @products
+        render json: products
       else
         render json: { message: "No products found" }, status: :not_found
       end
