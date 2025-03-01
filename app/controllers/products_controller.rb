@@ -10,21 +10,22 @@ class ProductsController < ApplicationController
     VENDORS = ["ASICS", "ADIDAS", "NIKE", "NEW BALANCE", "AIR JORDAN", "ON", "CROCS", "PUMA", "VANS"]
 
     def index
-      @products = []
-      total_count = 0
+      # @products = []
+      # total_count = 0
+        products = ShopifyAPI::Product.all(session: @session)
 
-      VENDORS.each do |vendor|
-        products = ShopifyAPI::Product.all(session: @session, vendor: vendor)
-        count = ShopifyAPI::Product.count(session: @session, vendor: vendor).body['count']
+      # VENDORS.each do |vendor|
+      #   products = ShopifyAPI::Product.all(session: @session, vendor: vendor)
+      #   count = ShopifyAPI::Product.count(session: @session, vendor: vendor).body['count']
 
-        puts "Vendor: #{vendor}, Count: #{count}"
-        total_count += count if count
-        @products.concat(products) if products.present?
-      end
+      #   puts "Vendor: #{vendor}, Count: #{count}"
+      #   total_count += count if count
+      #   @products.concat(products) if products.present?
+      # end
 
-      puts "Total Products Count: #{total_count}"
+      # puts "Total Products Count: #{total_count}"
       
-      if @products.present?
+      if products.present?
         render json: @products
       else
         render json: { message: "No products found" }, status: :not_found
