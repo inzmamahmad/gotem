@@ -7,8 +7,33 @@ require 'shopify_api'
 class ProductsController < ApplicationController
   # before_action :shopify_session, only: %i[index sync_vendor_stock fetch_all_shopify_products]
     before_action :shopify_session
-  def index
-    puts "befor remove extra products"
+    VENDORS = ["ASICS", "ADIDAS", "NIKE", "NEW BALANCE", "AIR JORDAN", "ON", "CROCS", "PUMA", "VANS"]
+
+    def index
+      @products = []
+      total_count = 0
+
+      VENDORS.each do |vendor|
+        products = ShopifyAPI::Product.all(session: @session, vendor: vendor)
+        count = ShopifyAPI::Product.count(session: @session, vendor: vendor).body['count']
+
+        puts "Vendor: #{vendor}, Count: #{count}"
+        total_count += count if count
+        @products.concat(products) if products.present?
+      end
+
+      puts "Total Products Count: #{total_count}"
+      
+      if @products.present?
+        render json: @products
+      else
+        render json: { message: "No products found" }, status: :not_found
+      end
+    end
+
+
+  def fetch_api_data
+     puts "befor remove extra products"
       remove_extra_shopify_product
     puts "After remove extra products"
       # Usage:

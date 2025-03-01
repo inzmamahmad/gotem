@@ -5,6 +5,7 @@ Rails.application.routes.draw do
 
   resources :products do
     collection do
+      get :fetch_api_data
       get :sync_vendor_stock
       get :check_all_feed_brand
       get :remove_extra_shopify_product
